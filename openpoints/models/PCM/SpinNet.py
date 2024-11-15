@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import ThreeDCCN as pn
+from .ThreeDCCN import Cylindrical_Net as pn
 import SpinNet.script.common as cm
 from SpinNet.script.common import switch
 
