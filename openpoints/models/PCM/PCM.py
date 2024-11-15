@@ -222,7 +222,10 @@ class PointMambaEncoder(nn.Module):
             print("before GAM")
             print("p shape:", p.shape)
             print("x shape:", x.shape)
-            print("x res:", x_res.shape)
+            if x_res is None:
+                print("x res: none")
+            else:
+                print("x res:", x_res.shape)
             # GAM forward
             p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
             x = self.pre_blocks_list[i](x)  # [b,d,g]
