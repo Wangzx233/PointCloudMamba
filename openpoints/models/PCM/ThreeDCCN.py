@@ -2,7 +2,7 @@ import pdb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from common import *
+from .common import *
 
 
 class BaseNet(nn.Module):
