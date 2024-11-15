@@ -273,6 +273,7 @@ class PointMambaEncoder(nn.Module):
             # in PCM, this is only a nn.Identity
             x = self.pos_blocks_list[i](x)  # [b,d,g]
 
+
         if self.cls_pooling == "max":
             x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
         elif self.cls_pooling == "mean":
