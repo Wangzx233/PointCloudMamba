@@ -10,278 +10,358 @@ from .PointMLP_layers import ConvBNReLU1D, LocalGrouper, PreExtraction, PreExtra
     PosExtraction, get_activation, PointNetFeaturePropagation
 from typing import List
 from ..layers import furthest_point_sample
+from .SpinNet import *
 
 
+def l2_norm(input, axis=1):
+    norm = torch.norm(input, p=2, dim=axis, keepdim=True)
+    output = torch.div(input, norm)
+    return output
+
+
+def var_to_invar(pts, rad_n, azi_n, ele_n):
+    """
+    直接从原始SpinNet代码复制
+    """
+    device = pts.device
+    B, N, nsample, C = pts.shape
+    assert N == rad_n * azi_n * ele_n
+    angle_step = np.array([0, 0, 2 * np.pi / azi_n])
+    pts = pts.view(B, rad_n, ele_n, azi_n, nsample, C)
+
+    R = np.zeros([azi_n, 3, 3])
+    for i in range(azi_n):
+        angle = -1 * i * angle_step
+        r = angles2rotation_matrix(angle)
+        R[i] = r
+    R = torch.FloatTensor(R).to(device)
+    R = R.view(1, 1, 1, azi_n, 3, 3).repeat(B, rad_n, ele_n, 1, 1, 1)
+    new_pts = torch.matmul(pts, R.transpose(-1, -2))
+
+    return new_pts.view(B, -1, nsample, C)
+
+
+class Cylindrical_Net(nn.Module):
+    """
+    直接从原始SpinNet代码复制
+    """
+
+    def __init__(self, inchan=16, dim=32):
+        super().__init__()
+        self.outdim = dim
+
+        # 保持原始SpinNet的网络结构
+        self.ops = nn.ModuleList([
+            nn.Conv3d(inchan, 32, k=[3, 3, 3], padding=1),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(32, 32, k=[3, 3, 3], padding=1),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(32, 64, k=[3, 3, 3], padding=1),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(64, 64, k=[3, 3, 3], padding=1),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(128, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 32, kernel_size=2, stride=2),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(32, dim, kernel_size=2, stride=2)
+        ])
+
+    def forward(self, x):
+        """
+        保持原始SpinNet的前向传播逻辑
+        x: [B, C, rad_n, ele_n, azi_n]
+        """
+        for op in self.ops:
+            if isinstance(op, nn.Conv3d):
+                x = op(x)
+            else:
+                # 当需要从3D转为2D时
+                if len(x.shape) == 5 and isinstance(op, nn.Conv2d):
+                    x = x.squeeze(2)
+                x = op(x)
+        return x
+
+
+class Descriptor_Net(nn.Module):
+    """
+    原始SpinNet的描述子网络
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.des_r = config['des_r']
+        self.rad_n = config['rad_n']
+        self.azi_n = config['azi_n']
+        self.ele_n = config['ele_n']
+        self.voxel_r = config['voxel_r']
+        self.voxel_sample = config['voxel_sample']
+
+        self.bn_xyz_raising = nn.BatchNorm2d(16)
+        self.activation = nn.ReLU()
+        self.xyz_raising = nn.Conv2d(3, 16, kernel_size=1)
+        self.conv_net = Cylindrical_Net(inchan=16, dim=32)
+
+    def forward(self, input):
+        center = input[:, -1, :].unsqueeze(1)
+        delta_x = input[:, :, 0:3] - center[:, :, 0:3]
+
+        # 计算z轴和旋转矩阵
+        z_axis = cal_Z_axis(delta_x, ref_point=input[:, -1, :3])
+        z_axis = l2_norm(z_axis, axis=1)
+        R = RodsRotatFormula(z_axis,
+                             torch.FloatTensor([0, 0, 1]).to(z_axis.device).unsqueeze(0).repeat(z_axis.shape[0], 1))
+        delta_x = torch.matmul(delta_x, R)
+
+        # 获取球形网格坐标
+        S2_xyz = get_voxel_coordinate(radius=self.des_r, rad_n=self.rad_n,
+                                      azi_n=self.azi_n, ele_n=self.ele_n).to(delta_x.device)
+        pts_xyz = S2_xyz.view(1, -1, 3).repeat([delta_x.shape[0], 1, 1])
+
+        # 球形查询
+        new_points = sphere_query(delta_x, pts_xyz, radius=self.voxel_r, nsample=self.voxel_sample)
+        new_points = new_points - pts_xyz.unsqueeze(2).repeat([1, 1, self.voxel_sample, 1])
+        new_points = var_to_invar(new_points, self.rad_n, self.azi_n, self.ele_n)
+
+        x = new_points.permute(0, 3, 1, 2)
+        x = self.activation(self.bn_xyz_raising(self.xyz_raising(x)))
+        x = F.max_pool2d(x, kernel_size=(1, x.size(3))).squeeze(3)
+
+        x = x.view(x.shape[0], x.shape[1], self.rad_n, self.ele_n, self.azi_n)
+        x = self.conv_net(x)
+        x = F.adaptive_max_pool2d(x, 1)
+
+        return x
+
+
+class SpinNetFeatureExtraction(nn.Module):
+    """
+    SpinNet特征提取器与PCM的接口层
+    """
+
+    def __init__(self, in_channels, out_channels, spinnet_config, bias=True):
+        super().__init__()
+        self.spinnet = Descriptor_Net(spinnet_config)
+        self.proj = nn.Linear(self.spinnet.conv_net.outdim, out_channels, bias=bias)
+
+    def forward(self, xyz, points):
+        B, N, _ = xyz.shape
+
+        # FPS采样关键点
+        fps_idx = furthest_point_sample(xyz, N // 4).long()
+        kpts = index_points(xyz, fps_idx)
+
+        # 准备SpinNet输入
+        input_points = torch.cat([xyz, kpts], dim=1)  # 包含所有点和关键点
+
+        # 提取SpinNet特征
+        features = self.spinnet(input_points)  # [B, C, 1, 1]
+        features = features.squeeze(-1).squeeze(-1).transpose(1, 2)  # [B, N//4, C]
+
+        # 特征插值回原始分辨率
+        features = feature_interpolate(features, kpts, xyz)
+
+        # 投影到所需维度
+        features = self.proj(features)
+
+        return xyz, features.transpose(1, 2)
 
 @MODELS.register_module()
 class PointMambaEncoder(nn.Module):
     def __init__(self, in_channels=3, embed_dim=64, groups=1, res_expansion=1.0,
                  activation="relu", bias=False, use_xyz=False, normalize="anchor",
                  dim_expansion=[2, 2, 2, 2], pre_blocks=[2, 2, 2, 2], pos_blocks=[2, 2, 2, 2],
-                 k_neighbors=[24, 24, 24, 24], k_strides=[1, 1, 1, 1], reducers=[2, 2, 2, 2],
-                 mamba_blocks=[1, 1, 1, 1],
-                 mamba_layers_orders='z',
+                 k_neighbors=[24, 24, 24, 24], reducers=[2, 2, 2, 2],
+                 spinnet_config=None, mamba_blocks=[1, 1, 1, 1],
+                 mamba_layers_orders='z', cls_pooling="max",
                  use_order_prompt=False, prompt_num_per_order=1,
                  rms_norm=True, fused_add_norm=False, residual_in_fp32=False,
-                 bimamba_type="none", drop_path_rate=0.1,
-                 mamba_pos=False, pos_type='share', pos_proj_type="linear",
-                 grid_size=0.02, combine_pos=False, block_residual=True,
-                 use_windows=False, windows_size=1200,
-                 cls_pooling="max",
-                 **kwargs):
+                 bimamba_type="none", drop_path_rate=0.1, **kwargs):
         super(PointMambaEncoder, self).__init__()
 
-        assert len(pre_blocks) == len(k_neighbors) == len(reducers) ==\
-               len(pos_blocks) == len(dim_expansion) == len(mamba_blocks), \
-            "Please check stage number consistent for pre_blocks, pos_blocks k_neighbors, reducers."
-
-        # local windows for mamba, this is only used in large point-cloud, such as 100k+ points (S3DIS)
-        self.use_windows = use_windows
-        self.windows_size = windows_size
-        if not isinstance(self.windows_size, list):
-            self.windows_size = [windows_size] * len(mamba_blocks)
-
-        self.combine_pos = combine_pos
-        self.local_rank = None
-        self.block_residual = block_residual
-
+        # 基本参数初始化
         self.stages = len(pre_blocks)
-        self.embedding = ConvBNReLU1D(in_channels, embed_dim, bias=bias, activation=activation)
-
-        # assign serialization order for per mamba layer
-        if not isinstance(mamba_layers_orders, list):
-            mamba_layers_orders = [mamba_layers_orders for i in range(sum(mamba_blocks))]
-        else:
-            assert len(mamba_layers_orders) == sum(mamba_blocks)
-        self.mamba_layers_orders = mamba_layers_orders
-
-        # indicate the current sequence order
-        self.order = 'original'
-
-        # order prompts
-        self.use_order_prompt = use_order_prompt
-        self.promot_num_per_order = prompt_num_per_order
-
-        if use_order_prompt:
-            # learnable embeddings for per order, channel is 384
-            unique_order = list(set(mamba_layers_orders))
-            overall_prompt_nums = len(unique_order) * prompt_num_per_order
-            self.order_prompt = nn.Embedding(overall_prompt_nums, 384)
-            order2idx = {order: [i * prompt_num_per_order, (i + 1) * prompt_num_per_order]
-                         for i, order in enumerate(unique_order)}
-            self.per_layer_prompt_indexe = []
-            for order in mamba_layers_orders:
-                self.per_layer_prompt_indexe.append(order2idx[order])
-
-        # point positional embedding
-        self.pos_type = pos_type
-        self.mamba_pos = mamba_pos
-        if pos_proj_type == "linear":
-            self.pos_proj_type = nn.Linear
-        else:
-            self.pos_proj_type = MLP
-        if self.mamba_pos:
-            if self.pos_type == "share":
-                if sum(dim_expansion) == len(dim_expansion):
-                    # if the channel size of all stages is equal, only init one proj function
-                    self.pos_proj = self.pos_proj_type(3, embed_dim * dim_expansion[0], bias=False)
-                    self.block_pos_share = True
-                else:
-                    # init proj functions for per stage
-                    self.pos_proj = nn.ModuleList()
-                    cur_dim = embed_dim
-                    for ratio in dim_expansion:
-                        cur_dim = ratio * cur_dim
-                        self.pos_proj.append(self.pos_proj_type(3, cur_dim, bias=False))
-                    self.block_pos_share = False
-            else:
-                # init proj functions for per mamba layer, will add at below
-                self.pos_proj = nn.ModuleList()
-
-        self.local_grouper_list = nn.ModuleList()
-        self.pre_blocks_list = nn.ModuleList()
+        self.embedding = nn.Linear(in_channels, embed_dim)
+        self.spinnet_blocks = nn.ModuleList()
         self.mamba_blocks_list = nn.ModuleList()
         self.pos_blocks_list = nn.ModuleList()
         self.residual_proj_blocks_list = nn.ModuleList()
+        self.cls_pooling = cls_pooling
 
-        last_layer_channel = embed_dim
-        for ratio in dim_expansion:
-            last_layer_channel *= ratio
+        # 处理mamba相关参数
+        self.mamba_layers_orders = mamba_layers_orders if isinstance(mamba_layers_orders, list) else [
+                                                                                                         mamba_layers_orders] * sum(
+            mamba_blocks)
+        self.order = 'original'
 
-        if use_order_prompt:
-            self.order_prompt_proj = nn.ModuleList()
-
-
+        # 初始化处理层
         last_channel = embed_dim
-        norm_cls = partial(
-            nn.LayerNorm if not rms_norm else RMSNorm, eps=1e-5,
-        )
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(mamba_blocks))]  # stochastic depth decay rule
-        # import ipdb;ipdb.set_trace()
-        inter_dpr = [0.0] + dpr
+        norm_cls = partial(nn.LayerNorm if not rms_norm else RMSNorm, eps=1e-5)
+
+        # 构建网络各阶段
         mamba_layer_idx = 0
-
-        for i in range(len(pre_blocks)):
+        for i in range(self.stages):
             out_channel = last_channel * dim_expansion[i]
-            pre_block_num = pre_blocks[i]
-            pos_block_num = pos_blocks[i]
-            mamba_block_num = mamba_blocks[i]
-            kneighbor = k_neighbors[i]
-            kstride = k_strides[i]
-            reduce = reducers[i]
-            # append local_grouper_list
-            local_grouper = LocalGrouper(last_channel, reduce, kneighbor, use_xyz, normalize,
-                                         k_stride=kstride)  # [b,g,k,d]
-            self.local_grouper_list.append(local_grouper)
-            # append pre_block_list
-            if pre_block_num == 0:
-                # only max pooling
-                pre_block_module = PreExtraction_Replace(last_channel, out_channel, pre_block_num,
-                                                         groups=groups,
-                                                         res_expansion=res_expansion,
-                                                         bias=bias, activation=activation, use_xyz=use_xyz)
-            else:
-                pre_block_module = PreExtraction(last_channel, out_channel, pre_block_num,
-                                                 groups=groups,
-                                                 res_expansion=res_expansion,
-                                                 bias=bias, activation=activation, use_xyz=use_xyz)
-            self.pre_blocks_list.append(pre_block_module)
 
-            # append mamba block
-            if last_channel == out_channel or i == 0 or not self.block_residual:
+            # SpinNet特征提取
+            spinnet_block = SpinNetFeatureExtraction(
+                last_channel,
+                out_channel,
+                spinnet_config,
+                bias=bias
+            )
+            self.spinnet_blocks.append(spinnet_block)
+
+            # 残差投影
+            if last_channel == out_channel or i == 0:
                 self.residual_proj_blocks_list.append(nn.Identity())
             else:
                 self.residual_proj_blocks_list.append(nn.Linear(last_channel, out_channel, bias=False))
+
+            # Mamba块
             mamba_block = nn.Sequential()
-            if use_order_prompt:
-                self.order_prompt_proj.append(nn.Linear(384, out_channel, bias=False))
-            for n_mamba in range(mamba_block_num):
-                mamba_block_module = MambaBlock(dim=out_channel, layer_idx=mamba_layer_idx,
-                                                bimamba_type=bimamba_type,
-                                                norm_cls=norm_cls, fused_add_norm=fused_add_norm,
-                                                residual_in_fp32=residual_in_fp32,
-                                                drop_path=inter_dpr[mamba_layer_idx])
+            for n_mamba in range(mamba_blocks[i]):
+                mamba_block_module = MambaBlock(
+                    dim=out_channel,
+                    layer_idx=mamba_layer_idx,
+                    bimamba_type=bimamba_type,
+                    norm_cls=norm_cls,
+                    fused_add_norm=fused_add_norm,
+                    residual_in_fp32=residual_in_fp32,
+                    drop_path=drop_path_rate
+                )
                 mamba_block.append(mamba_block_module)
-                if self.mamba_pos and self.pos_type != "share":
-                    self.pos_proj.append(self.pos_proj_type(3, out_channel, bias=False))
                 mamba_layer_idx += 1
             self.mamba_blocks_list.append(mamba_block)
 
-            # append pos_block_list
-            if pos_block_num == 0:
-                self.pos_blocks_list.append(nn.Identity())
-            else:
-                pos_block_module = PosExtraction(out_channel, pos_block_num, groups=groups,
-                                                 res_expansion=res_expansion, bias=bias,
-                                                 activation=activation)
-                self.pos_blocks_list.append(pos_block_module)
+            # 位置编码块
+            self.pos_blocks_list.append(nn.Identity())
 
             last_channel = out_channel
 
         self.out_channels = last_channel
-        self.act = get_activation(activation)
-
-        self.mamba_blocks_list.apply(
-            partial(_init_weights, n_layer=mamba_layer_idx, )
-        )
-
-        self.grid_size = grid_size
-        self.cls_pooling = cls_pooling
-
-    def forward(self, x, f0=None):
-        return self.forward_cls_feat(x, f0)
-
-    def serialization_func(self, p, x, x_res, order, layers_outputs=[]):
-        if order == self.order:
-            return p, x, x_res
-        else:
-            p, x, x_res = serialization(p, x, x_res=x_res, order=order,
-                                        layers_outputs=layers_outputs,
-                                        grid_size=self.grid_size)
-            self.order = order
-            return p, x, x_res
+        self.act = nn.ReLU(inplace=True) if activation == "relu" else nn.GELU()
 
     def forward_cls_feat(self, p, x=None):
         self.order = "original"
 
+        # 输入处理
         if isinstance(p, dict):
             p, x = p['pos'], p.get('x', None)
         if x is None:
             x = p.transpose(1, 2).contiguous()
-        else:
-            if self.combine_pos:
-                x = torch.cat([x, p.transpose(1, 2)], dim=1).contiguous()
 
         batch_size, _, _ = x.size()
-        x = self.embedding(x)  # B,D,N
+        x = self.embedding(x.transpose(1, 2)).transpose(1, 2)
+
         x_res = None
-
-        pos_proj_idx = 0
         mamba_layer_idx = 0
+
+        # 前向传播
         for i in range(self.stages):
-            print("before GAM")
-            print("p shape:", p.shape)
-            print("x shape:", x.shape)
-            print("x res:", x_res.shape)
-            # GAM forward
-            p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
-            x = self.pre_blocks_list[i](x)  # [b,d,g]
+            # SpinNet特征提取
+            p, x = self.spinnet_blocks[i](p, x)
 
+            # Mamba处理
             x = x.permute(0, 2, 1).contiguous()
-            if not self.block_residual:
-                x_res = None
-            x_res = self.residual_proj_blocks_list[i](x_res)
+            x_res = self.residual_proj_blocks_list[i](x_res) if x_res is not None else None
 
-            print("after GAM")
-            print("p shape:",p.shape)
-            print("x shape:",x.shape)
-            print("x res:",x_res.shape)
-            # mamba forward
             for layer in self.mamba_blocks_list[i]:
-                p, x, x_res = self.serialization_func(p, x, x_res, self.mamba_layers_orders[mamba_layer_idx])
-                if self.use_windows:
-                    p, x, x_res, n_windows, p_base = self.pre_split_windows(
-                        p, x, x_res, windows_size=self.windows_size[i])
-                if self.mamba_pos:
-                    if self.pos_type == 'share':
-                        if self.block_pos_share:
-                            x = x + self.pos_proj(p)
-                        else:
-                            x = x + self.pos_proj[i](p)
-                    else:
-                        x = x + self.pos_proj[pos_proj_idx](p)
-                        pos_proj_idx += 1
-                if self.use_order_prompt:
-                    layer_order_prompt_indexes = self.per_layer_prompt_indexe[mamba_layer_idx]
-                    layer_order_prompt = self.order_prompt.weight[
-                                         layer_order_prompt_indexes[0]: layer_order_prompt_indexes[1]]
-                    layer_order_prompt = self.order_prompt_proj[i](layer_order_prompt)
-                    layer_order_prompt = layer_order_prompt.unsqueeze(0).repeat(p.shape[0], 1, 1)
-                    x = torch.cat([layer_order_prompt, x, layer_order_prompt], dim=1)
-                    if x_res is not None:
-                        x_res = torch.cat([layer_order_prompt, x_res, layer_order_prompt], dim=1)
-                    x, x_res = layer(x, x_res)
-                    x = x[:, self.promot_num_per_order:-self.promot_num_per_order]
-                    x_res = x_res[:, self.promot_num_per_order:-self.promot_num_per_order]
-                else:
-                    x, x_res = layer(x, x_res)
-                if self.use_windows:
-                    p, x, x_res = self.post_split_windows(p, x, x_res, n_windows, p_base)
+                p, x, x_res = self.serialization_func(
+                    p, x, x_res,
+                    self.mamba_layers_orders[mamba_layer_idx]
+                )
+                x, x_res = layer(x, x_res)
                 mamba_layer_idx += 1
+
             x = x.permute(0, 2, 1).contiguous()
+            x = self.pos_blocks_list[i](x)
 
-            # in PCM, this is only a nn.Identity
-            x = self.pos_blocks_list[i](x)  # [b,d,g]
-
+        # 全局池化
         if self.cls_pooling == "max":
             x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
         elif self.cls_pooling == "mean":
-            x = x.mean(dim=-1, keepdim=False)
-        else:
+            x = x.mean(dim=-1)
+        else:  # mean + max
             x_max = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
-            x_mean = x.mean(dim=-1, keepdim=False)
+            x_mean = x.mean(dim=-1)
             x = x_max + x_mean
+
         return x
+
+    def forward(self, x, cls_label=None):
+        return self.forward_cls_feat(x)
+
+    def serialization_func(self, p, x, x_res, order):
+        if order == self.order:
+            return p, x, x_res
+        else:
+            p, x, x_res = serialization(p, x, x_res=x_res, order=order)
+            self.order = order
+            return p, x, x_res
+
+    def index_points(points, idx):
+        """
+        Input:
+            points: [B, N, C]
+            idx: [B, S]
+        Return:
+            new_points: [B, S, C]
+        """
+        device = points.device
+        B = points.shape[0]
+        view_shape = list(idx.shape)
+        view_shape[1:] = [1] * (len(view_shape) - 1)
+        repeat_shape = list(idx.shape)
+        repeat_shape[0] = 1
+        batch_indices = torch.arange(B, dtype=torch.long).to(device).view(view_shape).repeat(repeat_shape)
+        new_points = points[batch_indices, idx, :]
+        return new_points
+
+    def feature_interpolate(features, kpts, query_pts):
+        """
+        Input:
+            features: [B, K, C]
+            kpts: [B, K, 3]
+            query_pts: [B, N, 3]
+        Return:
+            interpolated_features: [B, N, C]
+        """
+        B, K, C = features.shape
+        _, N, _ = query_pts.shape
+
+        # 计算距离和权重
+        dist = torch.cdist(query_pts, kpts)  # B,N,K
+        weights = 1.0 / (dist + 1e-8)
+        weights = weights / torch.sum(weights, dim=-1, keepdim=True)  # B,N,K
+
+        # 特征插值
+        interpolated_features = torch.matmul(weights, features)  # B,N,C
+        return interpolated_features
 
     def forward_seg_feat(self, p, x=None):
         self.order = "original"
