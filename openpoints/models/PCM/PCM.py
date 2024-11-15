@@ -10,7 +10,7 @@ from .PointMLP_layers import ConvBNReLU1D, LocalGrouper, PreExtraction, PreExtra
     PosExtraction, get_activation, PointNetFeaturePropagation
 from typing import List
 from ..layers import furthest_point_sample
-from Minispin import *
+from .Minispin import *
 
 
 class SpinNetFeatureExtraction(nn.Module):
