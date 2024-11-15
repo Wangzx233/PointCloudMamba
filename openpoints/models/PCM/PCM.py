@@ -13,168 +13,182 @@ from ..layers import furthest_point_sample
 from .SpinNet import *
 
 
-def change_coordinates(xyz, radius):
-    """Convert Cartesian coordinates to Spherical coordinates
-    Args:
-        xyz: (B, N, 3) Cartesian coordinates
-        radius: float, radius of sphere
-    Returns:
-        spherical: (B, N, 3) Spherical coordinates (radius, elevation, azimuth)
+def l2_norm(input, axis=1):
+    norm = torch.norm(input, p=2, dim=axis, keepdim=True)
+    output = torch.div(input, norm)
+    return output
+
+
+def var_to_invar(pts, rad_n, azi_n, ele_n):
     """
-    rho = torch.norm(xyz, dim=-1, keepdim=True)
-    theta = torch.acos(xyz[..., 2:3] / (rho + 1e-8))  # elevation
-    phi = torch.atan2(xyz[..., 1:2], xyz[..., 0:1])  # azimuth
-    spherical = torch.cat([rho / radius, theta, phi], dim=-1)  # normalize radius
-    return spherical
-
-
-def get_spherical_coordinates(rad_n, ele_n, azi_n):
-    """Generate grid points in spherical coordinates
+    直接从原始SpinNet代码复制
     """
-    # Generate spherical coordinates
-    r = torch.linspace(0, 1, rad_n + 1)[:-1] + 1. / (2 * rad_n)  # [rad_n]
-    theta = torch.linspace(0, np.pi, ele_n + 1)[:-1] + np.pi / (2 * ele_n)  # [ele_n]
-    phi = torch.linspace(-np.pi, np.pi, azi_n + 1)[:-1] + np.pi / azi_n  # [azi_n]
+    device = pts.device
+    B, N, nsample, C = pts.shape
+    assert N == rad_n * azi_n * ele_n
+    angle_step = np.array([0, 0, 2 * np.pi / azi_n])
+    pts = pts.view(B, rad_n, ele_n, azi_n, nsample, C)
 
-    # Create meshgrid
-    r, theta, phi = torch.meshgrid(r, theta, phi)
+    R = np.zeros([azi_n, 3, 3])
+    for i in range(azi_n):
+        angle = -1 * i * angle_step
+        r = angles2rotation_matrix(angle)
+        R[i] = r
+    R = torch.FloatTensor(R).to(device)
+    R = R.view(1, 1, 1, azi_n, 3, 3).repeat(B, rad_n, ele_n, 1, 1, 1)
+    new_pts = torch.matmul(pts, R.transpose(-1, -2))
 
-    # Stack coordinates
-    grid = torch.stack([r, theta, phi], dim=-1)  # [rad_n, ele_n, azi_n, 3]
-    return grid
+    return new_pts.view(B, -1, nsample, C)
 
 
-class MiniSpinNet(nn.Module):
-    def __init__(self, config=None):
-        super(MiniSpinNet, self).__init__()
-        if config is None:
-            config = {}
+class Cylindrical_Net(nn.Module):
+    """
+    直接从原始SpinNet代码复制
+    """
 
-        self.des_r = config.get('des_r', 0.5)  # descriptor radius
-        self.rad_n = config.get('rad_n', 8)  # radial bins
-        self.azi_n = config.get('azi_n', 8)  # azimuth bins
-        self.ele_n = config.get('ele_n', 8)  # elevation bins
-        self.voxel_r = config.get('voxel_r', 0.15)  # voxel radius
-        self.voxel_sample = config.get('voxel_sample', 32)  # points per voxel
+    def __init__(self, inchan=16, dim=32):
+        super().__init__()
+        self.outdim = dim
 
-        # Initial feature extraction
-        self.bn_xyz_raising = nn.BatchNorm2d(32)
-        self.xyz_raising = nn.Conv2d(3, 32, kernel_size=1)
+        # 保持原始SpinNet的网络结构
+        self.ops = nn.ModuleList([
+            nn.Conv3d(inchan, 32, k=[3, 3, 3], padding=1),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
 
-        # 3D CNN backbone
-        self.conv_net = nn.Sequential(
-            # First block
-            nn.Conv3d(32, 64, kernel_size=3, padding=1),
+            nn.Conv3d(32, 32, k=[3, 3, 3], padding=1),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(32, 64, k=[3, 3, 3], padding=1),
             nn.BatchNorm3d(64),
             nn.ReLU(inplace=True),
 
-            # Second block
-            nn.Conv3d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm3d(128),
+            nn.Conv3d(64, 64, k=[3, 3, 3], padding=1),
+            nn.BatchNorm3d(64),
             nn.ReLU(inplace=True),
 
-            # Third block
-            nn.Conv3d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm3d(256),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-        )
 
-        self.outdim = 256
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
 
-    def forward(self, points, center_points):
+            nn.Conv2d(128, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 32, kernel_size=2, stride=2),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(32, dim, kernel_size=2, stride=2)
+        ])
+
+    def forward(self, x):
         """
-        Args:
-            points: (B, N, 3) input points
-            center_points: (B, M, 3) sampled centers
-        Returns:
-            desc: (B, M, C) point descriptors
+        保持原始SpinNet的前向传播逻辑
+        x: [B, C, rad_n, ele_n, azi_n]
         """
-        B, N, _ = points.shape
-        _, M, _ = center_points.shape
-        device = points.device
+        for op in self.ops:
+            if isinstance(op, nn.Conv3d):
+                x = op(x)
+            else:
+                # 当需要从3D转为2D时
+                if len(x.shape) == 5 and isinstance(op, nn.Conv2d):
+                    x = x.squeeze(2)
+                x = op(x)
+        return x
 
-        # Step 1: Compute relative coordinates
-        center_points = center_points.unsqueeze(2)  # [B, M, 1, 3]
-        points = points.unsqueeze(1).repeat(1, M, 1, 1)  # [B, M, N, 3]
-        relative_coords = points - center_points  # [B, M, N, 3]
 
-        # Step 2: Convert to spherical coordinates
-        spherical_coords = change_coordinates(relative_coords, self.des_r)  # [B, M, N, 3]
+class Descriptor_Net(nn.Module):
+    """
+    原始SpinNet的描述子网络
+    """
 
-        # Step 3: Create spherical bins
-        grid = get_spherical_coordinates(self.rad_n, self.ele_n, self.azi_n).to(device)
-        grid = grid.view(-1, 3)  # [rad_n*ele_n*azi_n, 3]
+    def __init__(self, config):
+        super().__init__()
+        self.des_r = config['des_r']
+        self.rad_n = config['rad_n']
+        self.azi_n = config['azi_n']
+        self.ele_n = config['ele_n']
+        self.voxel_r = config['voxel_r']
+        self.voxel_sample = config['voxel_sample']
 
-        # Step 4: Assign points to bins
-        spherical_coords = spherical_coords.reshape(B * M, N, 3)
-        grid = grid.unsqueeze(0).repeat(B * M, 1, 1)  # [B*M, rad_n*ele_n*azi_n, 3]
+        self.bn_xyz_raising = nn.BatchNorm2d(16)
+        self.activation = nn.ReLU()
+        self.xyz_raising = nn.Conv2d(3, 16, kernel_size=1)
+        self.conv_net = Cylindrical_Net(inchan=16, dim=32)
 
-        # Compute distances to bin centers
-        dist = torch.cdist(spherical_coords, grid)  # [B*M, N, rad_n*ele_n*azi_n]
+    def forward(self, input):
+        center = input[:, -1, :].unsqueeze(1)
+        delta_x = input[:, :, 0:3] - center[:, :, 0:3]
 
-        # Get nearest bin for each point
-        _, idx = dist.min(dim=-1)  # [B*M, N]
+        # 计算z轴和旋转矩阵
+        z_axis = cal_Z_axis(delta_x, ref_point=input[:, -1, :3])
+        z_axis = l2_norm(z_axis, axis=1)
+        R = RodsRotatFormula(z_axis,
+                             torch.FloatTensor([0, 0, 1]).to(z_axis.device).unsqueeze(0).repeat(z_axis.shape[0], 1))
+        delta_x = torch.matmul(delta_x, R)
 
-        # Step 5: Aggregate features in each bin
-        relative_coords = relative_coords.reshape(B * M, N, 3)
-        bin_features = torch.zeros(B * M, self.rad_n * self.ele_n * self.azi_n, 3, device=device)
-        bin_features.scatter_add_(1, idx.unsqueeze(-1).expand(-1, -1, 3), relative_coords)
+        # 获取球形网格坐标
+        S2_xyz = get_voxel_coordinate(radius=self.des_r, rad_n=self.rad_n,
+                                      azi_n=self.azi_n, ele_n=self.ele_n).to(delta_x.device)
+        pts_xyz = S2_xyz.view(1, -1, 3).repeat([delta_x.shape[0], 1, 1])
 
-        # Normalize features
-        bin_counts = torch.zeros(B * M, self.rad_n * self.ele_n * self.azi_n, 1, device=device)
-        ones = torch.ones_like(idx, dtype=torch.float32).unsqueeze(-1)
-        bin_counts.scatter_add_(1, idx.unsqueeze(-1), ones)
-        bin_counts = torch.clamp(bin_counts, min=1.0)
-        bin_features = bin_features / bin_counts
+        # 球形查询
+        new_points = sphere_query(delta_x, pts_xyz, radius=self.voxel_r, nsample=self.voxel_sample)
+        new_points = new_points - pts_xyz.unsqueeze(2).repeat([1, 1, self.voxel_sample, 1])
+        new_points = var_to_invar(new_points, self.rad_n, self.azi_n, self.ele_n)
 
-        # Step 6: Process features through network
-        x = bin_features.permute(0, 2, 1)  # [B*M, 3, bins]
-        x = self.xyz_raising(x.unsqueeze(-1))  # [B*M, 32, bins, 1]
-        x = self.bn_xyz_raising(x)
-        x = F.relu(x)
+        x = new_points.permute(0, 3, 1, 2)
+        x = self.activation(self.bn_xyz_raising(self.xyz_raising(x)))
+        x = F.max_pool2d(x, kernel_size=(1, x.size(3))).squeeze(3)
 
-        # Reshape for 3D convolution
-        x = x.squeeze(-1).reshape(B * M, 32, self.rad_n, self.ele_n, self.azi_n)
+        x = x.view(x.shape[0], x.shape[1], self.rad_n, self.ele_n, self.azi_n)
+        x = self.conv_net(x)
+        x = F.adaptive_max_pool2d(x, 1)
 
-        # Apply 3D convolutions
-        x = self.conv_net(x)  # [B*M, 256, rad_n, ele_n, azi_n]
-
-        # Global pooling
-        x = F.adaptive_max_pool3d(x, 1).view(B, M, self.outdim)
-
-        return {'desc': x}
+        return x
 
 
 class SpinNetFeatureExtraction(nn.Module):
+    """
+    SpinNet特征提取器与PCM的接口层
+    """
+
     def __init__(self, in_channels, out_channels, spinnet_config, bias=True):
-        super(SpinNetFeatureExtraction, self).__init__()
-        self.spinnet = MiniSpinNet(spinnet_config)
-        self.proj = nn.Linear(self.spinnet.outdim, out_channels, bias=bias)
+        super().__init__()
+        self.spinnet = Descriptor_Net(spinnet_config)
+        self.proj = nn.Linear(self.spinnet.conv_net.outdim, out_channels, bias=bias)
 
     def forward(self, xyz, points):
-        """
-        Args:
-            xyz: (B, N, 3) point coordinates
-            points: (B, C, N) point features
-        """
         B, N, _ = xyz.shape
 
-        # Sample keypoints using FPS
-        n_sample = max(N // 4, 256)
-        fps_idx = furthest_point_sample(xyz, n_sample).long()
-        kpts = index_points(xyz, fps_idx)  # [B, M, 3]
+        # FPS采样关键点
+        fps_idx = furthest_point_sample(xyz, N // 4).long()
+        kpts = index_points(xyz, fps_idx)
 
-        # Extract SpinNet features
-        spin_out = self.spinnet(xyz, kpts)  # use all points with sampled centers
-        features = spin_out['desc']  # [B, M, C]
+        # 准备SpinNet输入
+        input_points = torch.cat([xyz, kpts], dim=1)  # 包含所有点和关键点
 
-        # Interpolate features back to original points
-        features = feature_interpolate(features, kpts, xyz)  # [B, N, C]
+        # 提取SpinNet特征
+        features = self.spinnet(input_points)  # [B, C, 1, 1]
+        features = features.squeeze(-1).squeeze(-1).transpose(1, 2)  # [B, N//4, C]
 
-        # Project to output dimension
-        features = self.proj(features)  # [B, N, out_channels]
+        # 特征插值回原始分辨率
+        features = feature_interpolate(features, kpts, xyz)
 
-        return xyz, features.transpose(1, 2)  # return [B, out_channels, N]
+        # 投影到所需维度
+        features = self.proj(features)
+
+        return xyz, features.transpose(1, 2)
 
 @MODELS.register_module()
 class PointMambaEncoder(nn.Module):
