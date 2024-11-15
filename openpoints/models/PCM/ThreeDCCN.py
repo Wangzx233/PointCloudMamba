@@ -2,7 +2,7 @@ import pdb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import SpinNet.script.common as cm
+from common import *
 
 
 class BaseNet(nn.Module):
@@ -58,11 +58,11 @@ class Cyclindrical_ConvNet(BaseNet):
             k_exist = hasattr(op, 'kernel_size')
             if k_exist:
                 if len(op.kernel_size) == 3:
-                    x = cm.pad_image_3d(x, op.kernel_size[1] + (op.kernel_size[1] - 1) * (op.dilation[0] - 1))
+                    x = pad_image_3d(x, op.kernel_size[1] + (op.kernel_size[1] - 1) * (op.dilation[0] - 1))
                 else:
                     if len(x.shape) == 5:
                         x = x.squeeze(2)
-                    x = cm.pad_image(x, op.kernel_size[0] + (op.kernel_size[0] - 1) * (op.dilation[0] - 1))
+                    x = pad_image(x, op.kernel_size[0] + (op.kernel_size[0] - 1) * (op.dilation[0] - 1))
             x = op(x)
         return x
 

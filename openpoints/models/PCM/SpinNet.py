@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .ThreeDCCN import Cylindrical_Net as pn
-import SpinNet.script.common as cm
-from SpinNet.script.common import switch
+from .common import *
+
 
 
 class Descriptor_Net(nn.Module):
@@ -49,9 +49,9 @@ class Descriptor_Net(nn.Module):
         for case in switch(self.dataset):
             if case('3DMatch'):
                 # 计算参考轴 z_axis 并进行旋转以消除旋转变化
-                z_axis = cm.cal_Z_axis(delta_x, ref_point=input[:, -1, :3])
-                z_axis = cm.l2_norm(z_axis, axis=1)
-                R = cm.RodsRotatFormula(z_axis, torch.FloatTensor([0, 0, 1]).unsqueeze(0).repeat(z_axis.shape[0], 1))
+                z_axis = cal_Z_axis(delta_x, ref_point=input[:, -1, :3])
+                z_axis = l2_norm(z_axis, axis=1)
+                R = RodsRotatFormula(z_axis, torch.FloatTensor([0, 0, 1]).unsqueeze(0).repeat(z_axis.shape[0], 1))
                 delta_x = torch.matmul(delta_x, R)
                 break
             if case('KITTI'):
@@ -59,7 +59,7 @@ class Descriptor_Net(nn.Module):
 
         # partition the local surface along elevator, azimuth, radial dimensions
         # 将局部表面划分为体素
-        S2_xyz = torch.FloatTensor(cm.get_voxel_coordinate(radius=self.des_r,
+        S2_xyz = torch.FloatTensor(get_voxel_coordinate(radius=self.des_r,
                                                            rad_n=self.rad_n,
                                                            azi_n=self.azi_n,
                                                            ele_n=self.ele_n))
@@ -68,11 +68,11 @@ class Descriptor_Net(nn.Module):
         pts_xyz = S2_xyz.view(1, -1, 3).repeat([delta_x.shape[0], 1, 1]).cuda()
 
         # query points in sphere
-        new_points = cm.sphere_query(delta_x, pts_xyz, radius=self.voxel_r,
+        new_points = sphere_query(delta_x, pts_xyz, radius=self.voxel_r,
                                      nsample=self.voxel_sample)
         # transform rotation-variant coords into rotation-invariant coords
         new_points = new_points - pts_xyz.unsqueeze(2).repeat([1, 1, self.voxel_sample, 1])
-        new_points = cm.var_to_invar(new_points, self.rad_n, self.azi_n, self.ele_n)
+        new_points = var_to_invar(new_points, self.rad_n, self.azi_n, self.ele_n)
 
         # 重新排列张量
         print(new_points.shape)
