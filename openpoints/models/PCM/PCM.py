@@ -13,84 +13,136 @@ from ..layers import furthest_point_sample
 from .SpinNet import *
 
 
+def change_coordinates(xyz, radius):
+    """Convert Cartesian coordinates to Spherical coordinates
+    Args:
+        xyz: (B, N, 3) Cartesian coordinates
+        radius: float, radius of sphere
+    Returns:
+        spherical: (B, N, 3) Spherical coordinates (radius, elevation, azimuth)
+    """
+    rho = torch.norm(xyz, dim=-1, keepdim=True)
+    theta = torch.acos(xyz[..., 2:3] / (rho + 1e-8))  # elevation
+    phi = torch.atan2(xyz[..., 1:2], xyz[..., 0:1])  # azimuth
+    spherical = torch.cat([rho / radius, theta, phi], dim=-1)  # normalize radius
+    return spherical
+
+
+def get_spherical_coordinates(rad_n, ele_n, azi_n):
+    """Generate grid points in spherical coordinates
+    """
+    # Generate spherical coordinates
+    r = torch.linspace(0, 1, rad_n + 1)[:-1] + 1. / (2 * rad_n)  # [rad_n]
+    theta = torch.linspace(0, np.pi, ele_n + 1)[:-1] + np.pi / (2 * ele_n)  # [ele_n]
+    phi = torch.linspace(-np.pi, np.pi, azi_n + 1)[:-1] + np.pi / azi_n  # [azi_n]
+
+    # Create meshgrid
+    r, theta, phi = torch.meshgrid(r, theta, phi)
+
+    # Stack coordinates
+    grid = torch.stack([r, theta, phi], dim=-1)  # [rad_n, ele_n, azi_n, 3]
+    return grid
+
+
 class MiniSpinNet(nn.Module):
-    """
-    简化版的SpinNet以适配ModelNet40分类任务
-    """
-
-    def __init__(self, config):
+    def __init__(self, config=None):
         super(MiniSpinNet, self).__init__()
-        self.des_r = config.get('des_r', 0.5)
-        self.rad_n = config.get('rad_n', 8)
-        self.azi_n = config.get('azi_n', 8)
-        self.ele_n = config.get('ele_n', 8)
-        self.voxel_r = config.get('voxel_r', 0.15)
-        self.voxel_sample = config.get('voxel_sample', 32)
+        if config is None:
+            config = {}
 
-        # 初始特征提取
+        self.des_r = config.get('des_r', 0.5)  # descriptor radius
+        self.rad_n = config.get('rad_n', 8)  # radial bins
+        self.azi_n = config.get('azi_n', 8)  # azimuth bins
+        self.ele_n = config.get('ele_n', 8)  # elevation bins
+        self.voxel_r = config.get('voxel_r', 0.15)  # voxel radius
+        self.voxel_sample = config.get('voxel_sample', 32)  # points per voxel
+
+        # Initial feature extraction
         self.bn_xyz_raising = nn.BatchNorm2d(32)
         self.xyz_raising = nn.Conv2d(3, 32, kernel_size=1)
 
-        # 主干网络
+        # 3D CNN backbone
         self.conv_net = nn.Sequential(
+            # First block
             nn.Conv3d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm3d(64),
             nn.ReLU(inplace=True),
 
+            # Second block
             nn.Conv3d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm3d(128),
             nn.ReLU(inplace=True),
 
+            # Third block
             nn.Conv3d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm3d(256),
             nn.ReLU(inplace=True),
         )
-        self.outdim = 256  # 输出维度
+
+        self.outdim = 256
 
     def forward(self, points, center_points):
         """
         Args:
-            points: (B, N, 3)
-            center_points: (B, M, 3)
+            points: (B, N, 3) input points
+            center_points: (B, M, 3) sampled centers
         Returns:
-            desc: (B, M, C)
+            desc: (B, M, C) point descriptors
         """
         B, N, _ = points.shape
         _, M, _ = center_points.shape
+        device = points.device
 
-        # 计算相对坐标
-        points = points.unsqueeze(1).repeat(1, M, 1, 1)  # B,M,N,3
-        center_points = center_points.unsqueeze(2)  # B,M,1,3
-        relative_coords = points - center_points  # B,M,N,3
+        # Step 1: Compute relative coordinates
+        center_points = center_points.unsqueeze(2)  # [B, M, 1, 3]
+        points = points.unsqueeze(1).repeat(1, M, 1, 1)  # [B, M, N, 3]
+        relative_coords = points - center_points  # [B, M, N, 3]
 
-        # 球面坐标变换
-        radius = torch.norm(relative_coords, dim=-1, keepdim=True)  # B,M,N,1
-        normalized_coords = relative_coords / (radius + 1e-10)
+        # Step 2: Convert to spherical coordinates
+        spherical_coords = change_coordinates(relative_coords, self.des_r)  # [B, M, N, 3]
 
-        # 创建球形网格
-        theta = torch.linspace(0, np.pi, self.ele_n).to(points.device)
-        phi = torch.linspace(0, 2 * np.pi, self.azi_n).to(points.device)
-        r = torch.linspace(0, self.des_r, self.rad_n).to(points.device)
+        # Step 3: Create spherical bins
+        grid = get_spherical_coordinates(self.rad_n, self.ele_n, self.azi_n).to(device)
+        grid = grid.view(-1, 3)  # [rad_n*ele_n*azi_n, 3]
 
-        # 特征提取
-        x = relative_coords.permute(0, 1, 3, 2)  # B,M,3,N
-        x = self.xyz_raising(x)  # B,M,C,N
+        # Step 4: Assign points to bins
+        spherical_coords = spherical_coords.reshape(B * M, N, 3)
+        grid = grid.unsqueeze(0).repeat(B * M, 1, 1)  # [B*M, rad_n*ele_n*azi_n, 3]
+
+        # Compute distances to bin centers
+        dist = torch.cdist(spherical_coords, grid)  # [B*M, N, rad_n*ele_n*azi_n]
+
+        # Get nearest bin for each point
+        _, idx = dist.min(dim=-1)  # [B*M, N]
+
+        # Step 5: Aggregate features in each bin
+        relative_coords = relative_coords.reshape(B * M, N, 3)
+        bin_features = torch.zeros(B * M, self.rad_n * self.ele_n * self.azi_n, 3, device=device)
+        bin_features.scatter_add_(1, idx.unsqueeze(-1).expand(-1, -1, 3), relative_coords)
+
+        # Normalize features
+        bin_counts = torch.zeros(B * M, self.rad_n * self.ele_n * self.azi_n, 1, device=device)
+        ones = torch.ones_like(idx, dtype=torch.float32).unsqueeze(-1)
+        bin_counts.scatter_add_(1, idx.unsqueeze(-1), ones)
+        bin_counts = torch.clamp(bin_counts, min=1.0)
+        bin_features = bin_features / bin_counts
+
+        # Step 6: Process features through network
+        x = bin_features.permute(0, 2, 1)  # [B*M, 3, bins]
+        x = self.xyz_raising(x.unsqueeze(-1))  # [B*M, 32, bins, 1]
         x = self.bn_xyz_raising(x)
         x = F.relu(x)
 
-        # 转换为体素格式
-        x = x.max(dim=-1)[0]  # B,M,C
-        x = x.view(B, M, -1, self.ele_n, self.azi_n)
-        x = x.permute(0, 2, 1, 3, 4)  # B,C,M,ele,azi
+        # Reshape for 3D convolution
+        x = x.squeeze(-1).reshape(B * M, 32, self.rad_n, self.ele_n, self.azi_n)
 
-        # 3D卷积处理
-        x = self.conv_net(x)
+        # Apply 3D convolutions
+        x = self.conv_net(x)  # [B*M, 256, rad_n, ele_n, azi_n]
 
-        # 全局池化得到描述子
-        desc = F.adaptive_max_pool3d(x, (1, 1, 1)).squeeze(-1).squeeze(-1)
-        desc = desc.transpose(1, 2)  # B,M,C
+        # Global pooling
+        x = F.adaptive_max_pool3d(x, 1).view(B, M, self.outdim)
 
-        return {'desc': desc}
+        return {'desc': x}
 
 
 class SpinNetFeatureExtraction(nn.Module):
@@ -102,30 +154,27 @@ class SpinNetFeatureExtraction(nn.Module):
     def forward(self, xyz, points):
         """
         Args:
-            xyz: (B, N, 3) 原始点云坐标
-            points: (B, C, N) 点云特征
-        Returns:
-            xyz: (B, N, 3) 更新后的坐标
-            features: (B, C, N) 更新后的特征
+            xyz: (B, N, 3) point coordinates
+            points: (B, C, N) point features
         """
         B, N, _ = xyz.shape
 
-        # 使用FPS采样关键点
-        fps_idx = furthest_point_sample(xyz, N // 4).long()  # 采样1/4的点作为关键点
-        kpts = index_points(xyz, fps_idx)  # (B, N//4, 3)
+        # Sample keypoints using FPS
+        n_sample = max(N // 4, 256)
+        fps_idx = furthest_point_sample(xyz, n_sample).long()
+        kpts = index_points(xyz, fps_idx)  # [B, M, 3]
 
-        # 提取SpinNet特征
-        spin_out = self.spinnet(xyz, kpts)  # 使用所有点和关键点
-        features = spin_out['desc']  # (B, N//4, C)
+        # Extract SpinNet features
+        spin_out = self.spinnet(xyz, kpts)  # use all points with sampled centers
+        features = spin_out['desc']  # [B, M, C]
 
-        # 特征插值回原始点云分辨率
-        features = feature_interpolate(features, kpts, xyz)  # (B, N, C)
+        # Interpolate features back to original points
+        features = feature_interpolate(features, kpts, xyz)  # [B, N, C]
 
-        # 投影到所需维度
-        features = self.proj(features)  # (B, N, out_channels)
+        # Project to output dimension
+        features = self.proj(features)  # [B, N, out_channels]
 
-        return xyz, features.transpose(1, 2)  # 返回(B, out_channels, N)格式
-
+        return xyz, features.transpose(1, 2)  # return [B, out_channels, N]
 
 @MODELS.register_module()
 class PointMambaEncoder(nn.Module):
