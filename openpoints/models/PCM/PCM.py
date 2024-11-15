@@ -10,31 +10,39 @@ from .PointMLP_layers import ConvBNReLU1D, LocalGrouper, PreExtraction, PreExtra
     PosExtraction, get_activation, PointNetFeaturePropagation
 from typing import List
 from ..layers import furthest_point_sample
-from .Minispin import *
-
+from .SpinNet import *
 
 class SpinNetFeatureExtraction(nn.Module):
-    def __init__(self, in_channels, out_channels, config, bias=True):
+    def __init__(self, in_channels, out_channels, spinnet_config, bias=True):
         super(SpinNetFeatureExtraction, self).__init__()
-        self.spinnet = MiniSpinNet(config)
-        self.proj = nn.Linear(self.spinnet.conv_net.outdim, out_channels, bias=bias)
+        # Initialize SpinNet descriptor
+        self.spinnet = Descriptor_Net(
+            des_r=spinnet_config.get('des_r', 0.5),
+            rad_n=spinnet_config.get('rad_n', 16),
+            azi_n=spinnet_config.get('azi_n', 8),
+            ele_n=spinnet_config.get('ele_n', 8),
+            voxel_r=spinnet_config.get('voxel_r', 0.1),
+            voxel_sample=spinnet_config.get('voxel_sample', 32),
+            dataset=spinnet_config.get('dataset', '3DMatch')
+        )
+        # Project SpinNet features to desired output dimension
+        self.proj = nn.Linear(self.spinnet.conv_net.out_dim, out_channels, bias=bias)
 
     def forward(self, xyz, points):
-        # xyz: [B, N, 3], points: [B, C, N]
         B, N, _ = xyz.shape
 
-        # Get keypoints using FPS
+        # Use FPS to sample keypoints
         fps_idx = furthest_point_sample(xyz, N).long()
         kpts = index_points(xyz, fps_idx)
 
-        # Extract features using SpinNet
-        spin_out = self.spinnet(points.transpose(1, 2).contiguous(), kpts)
-        features = spin_out['desc']  # [B, N, C]
+        # Extract SpinNet features
+        spinnet_features = self.spinnet(points.transpose(1, 2))  # BxCxN
+        features = spinnet_features.transpose(1, 2)  # BxNxC
 
-        # Project to output dimension
+        # Project to required dimension
         features = self.proj(features)
 
-        return xyz, features.transpose(1, 2).contiguous()
+        return xyz, features.transpose(1, 2)
 
 @MODELS.register_module()
 class PointMambaEncoder(nn.Module):
@@ -46,14 +54,9 @@ class PointMambaEncoder(nn.Module):
                  use_order_prompt=False, prompt_num_per_order=1,
                  rms_norm=True, fused_add_norm=False, residual_in_fp32=False,
                  bimamba_type="none", drop_path_rate=0.1,
-                 mamba_pos=False, pos_type='share', pos_proj_type="linear",
-                 grid_size=0.02, combine_pos=False, block_residual=True,
-                 use_windows=False, windows_size=1200,
-                 cls_pooling="max",
                  **kwargs):
         super(PointMambaEncoder, self).__init__()
 
-        # Initialize basic parameters
         self.stages = len(pre_blocks)
         self.embedding = nn.Linear(in_channels, embed_dim)
         self.spinnet_blocks = nn.ModuleList()
@@ -61,21 +64,17 @@ class PointMambaEncoder(nn.Module):
         self.pos_blocks_list = nn.ModuleList()
         self.residual_proj_blocks_list = nn.ModuleList()
 
-        # Other parameters from original PCM
-        self.use_windows = use_windows
-        self.windows_size = windows_size if isinstance(windows_size, list) else [windows_size] * len(mamba_blocks)
-        self.combine_pos = combine_pos
-        self.block_residual = block_residual
+        # PCM related parameters
         self.mamba_layers_orders = mamba_layers_orders if isinstance(mamba_layers_orders, list) else [
                                                                                                          mamba_layers_orders] * sum(
             mamba_blocks)
         self.order = 'original'
 
-        # Initialize channels
+        # Initialize processing layers
         last_channel = embed_dim
         norm_cls = partial(nn.LayerNorm if not rms_norm else RMSNorm, eps=1e-5)
 
-        # Build network layers
+        # Build network stages
         mamba_layer_idx = 0
         for i in range(self.stages):
             out_channel = last_channel * dim_expansion[i]
@@ -89,12 +88,13 @@ class PointMambaEncoder(nn.Module):
             )
             self.spinnet_blocks.append(spinnet_block)
 
-            # Mamba blocks
-            if last_channel == out_channel or i == 0 or not self.block_residual:
+            # Residual projection
+            if last_channel == out_channel or i == 0:
                 self.residual_proj_blocks_list.append(nn.Identity())
             else:
                 self.residual_proj_blocks_list.append(nn.Linear(last_channel, out_channel, bias=False))
 
+            # Mamba blocks
             mamba_block = nn.Sequential()
             for n_mamba in range(mamba_blocks[i]):
                 mamba_block_module = MambaBlock(
@@ -110,19 +110,15 @@ class PointMambaEncoder(nn.Module):
                 mamba_layer_idx += 1
             self.mamba_blocks_list.append(mamba_block)
 
-            # Position blocks (identity in PCM)
+            # Position blocks (identity in this case)
             self.pos_blocks_list.append(nn.Identity())
 
             last_channel = out_channel
 
         self.out_channels = last_channel
         self.act = nn.ReLU(inplace=True) if activation == "relu" else nn.GELU()
-        self.cls_pooling = cls_pooling
 
-    def forward(self, x, f0=None):
-        return self.forward_cls_feat(x, f0)
-
-    def forward_cls_feat(self, p, x=None):
+    def forward(self, p, x=None):
         self.order = "original"
 
         # Input processing
@@ -130,8 +126,6 @@ class PointMambaEncoder(nn.Module):
             p, x = p['pos'], p.get('x', None)
         if x is None:
             x = p.transpose(1, 2).contiguous()
-        elif self.combine_pos:
-            x = torch.cat([x, p.transpose(1, 2)], dim=1).contiguous()
 
         batch_size, _, _ = x.size()
         x = self.embedding(x.transpose(1, 2)).transpose(1, 2)
@@ -146,7 +140,7 @@ class PointMambaEncoder(nn.Module):
 
             # Mamba processing
             x = x.permute(0, 2, 1).contiguous()
-            x_res = self.residual_proj_blocks_list[i](x_res) if self.block_residual else None
+            x_res = self.residual_proj_blocks_list[i](x_res) if x_res is not None else None
 
             for layer in self.mamba_blocks_list[i]:
                 p, x, x_res = self.serialization_func(
@@ -160,24 +154,15 @@ class PointMambaEncoder(nn.Module):
             x = self.pos_blocks_list[i](x)
 
         # Global pooling
-        if self.cls_pooling == "max":
-            x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
-        elif self.cls_pooling == "mean":
-            x = x.mean(dim=-1, keepdim=False)
-        else:
-            x_max = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
-            x_mean = x.mean(dim=-1, keepdim=False)
-            x = x_max + x_mean
+        x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
 
         return x
 
-    def serialization_func(self, p, x, x_res, order, layers_outputs=[]):
+    def serialization_func(self, p, x, x_res, order):
         if order == self.order:
             return p, x, x_res
         else:
-            p, x, x_res = serialization(p, x, x_res=x_res, order=order,
-                                        layers_outputs=layers_outputs,
-                                        grid_size=self.grid_size)
+            p, x, x_res = serialization(p, x, x_res=x_res, order=order)
             self.order = order
             return p, x, x_res
 
