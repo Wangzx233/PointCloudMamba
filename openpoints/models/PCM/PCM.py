@@ -225,7 +225,7 @@ class PointMambaEncoder(nn.Module):
             if x_res is None:
                 print("x res: none")
             else:
-                print("x res:", x_res.shape)
+                print("x res:", x_res)
             # GAM forward
             p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
             x = self.pre_blocks_list[i](x)  # [b,d,g]
@@ -238,7 +238,7 @@ class PointMambaEncoder(nn.Module):
             print("after GAM")
             print("p shape:",p.shape)
             print("x shape:",x.shape)
-            print("x res:",x_res.shape)
+            print("x res:",x_res)
             # mamba forward
             for layer in self.mamba_blocks_list[i]:
                 p, x, x_res = self.serialization_func(p, x, x_res, self.mamba_layers_orders[mamba_layer_idx])
