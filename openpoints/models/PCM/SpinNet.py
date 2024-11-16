@@ -105,12 +105,12 @@ class EnhancedFeaturePropagation(nn.Module):
             nn.ReLU()
         )
 
-    def forward(self, p, patch_feature):
+    def forward(self, p,N, patch_feature):
         """
         p: (B,N,3) - 原始点云坐标
         patch_feature: (B,k,1) - SpinNet提取的特征
         """
-        B, N, _ = p.shape
+        B, _, _ = p.shape
 
         # 1. 处理全局特征
         global_feat = patch_feature.squeeze(-1)  # (B,k)

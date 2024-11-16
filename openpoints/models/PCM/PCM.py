@@ -228,6 +228,7 @@ class PointMambaEncoder(nn.Module):
         pos_proj_idx = 0
         mamba_layer_idx = 0
 
+        N = p.shape[1]
 
         for i in range(self.stages):
             print("before GAM",i)
@@ -252,10 +253,13 @@ class PointMambaEncoder(nn.Module):
             if i == 2 :
                 dim=dim*2
 
+            if i != 0:
+                N=N/2
+
             x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
 
             feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
-            x = feature_propagator(p, x)  # (B,N,384)
+            x = feature_propagator(p,N, x)  # (B,N,384)
 
             # x = x.permute(0, 2, 1)
             if not self.block_residual:
