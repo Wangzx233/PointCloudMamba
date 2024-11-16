@@ -192,7 +192,7 @@ class PointMambaEncoder(nn.Module):
         self.cls_pooling = cls_pooling
 
         # Spin_net
-        self.spin_net = Descriptor_Net
+        self.spin_net = Descriptor_Net(32)
         # self.spin_net = self.spin_net.cuda()
         # self.spin_net = torch.nn.DataParallel(self.spin_net, device_ids=[0])
 
@@ -228,7 +228,7 @@ class PointMambaEncoder(nn.Module):
         pos_proj_idx = 0
         mamba_layer_idx = 0
 
-        self.spin_net = self.spin_net(32)
+
         for i in range(self.stages):
             print("before GAM",i)
             print("p shape:", p.shape)
@@ -238,26 +238,29 @@ class PointMambaEncoder(nn.Module):
             # else:
             #     print("x res:", x_res.shape)
             # GAM forward
-            p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
-            x = self.pre_blocks_list[i](x)  # [b,d,g]
-
-            x = x.permute(0, 2, 1).contiguous()
-            if not self.block_residual:
-                x_res = None
-            x_res = self.residual_proj_blocks_list[i](x_res)
+            # p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
+            # x = self.pre_blocks_list[i](x)  # [b,d,g]
+            #
+            # x = x.permute(0, 2, 1).contiguous()
+            # if not self.block_residual:
+            #     x_res = None
+            # x_res = self.residual_proj_blocks_list[i](x_res)
 
             # Spin
 
             dim = x.shape[1]
-            # x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
-            #
-            # feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
-            # x = feature_propagator(p, x)  # (B,N,384)
-            #
-            # # x = x.permute(0, 2, 1)
-            # if not self.block_residual:
-            #     x_res = None
-            # x_res = self.residual_proj_blocks_list[i](x_res)
+            if i == 2 :
+                dim=dim*2
+
+            x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
+
+            feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
+            x = feature_propagator(p, x)  # (B,N,384)
+
+            # x = x.permute(0, 2, 1)
+            if not self.block_residual:
+                x_res = None
+            x_res = self.residual_proj_blocks_list[i](x_res)
 
             print("after GAM",i)
             print("p shape:",p.shape)
