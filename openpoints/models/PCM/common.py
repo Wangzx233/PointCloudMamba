@@ -543,7 +543,7 @@ def cal_Z_axis(local_cor, local_weight=None, ref_point=None):
     B, N, _ = local_cor.shape
     cov_matrix = torch.matmul(local_cor.transpose(-1, -2), local_cor) if local_weight is None \
         else Variable(torch.matmul(local_cor.transpose(-1, -2), local_cor * local_weight), requires_grad=True)
-    Z_axis = torch.symeig(cov_matrix, eigenvectors=True)[1][:, :, 0]
+    Z_axis = torch.linalg.eigh(cov_matrix, UPLO='U')[1][:, :, 0]
     mask = (torch.sum(-Z_axis * ref_point, dim=1) < 0).float().unsqueeze(1)
     Z_axis = Z_axis * (1 - mask) - Z_axis * mask
 

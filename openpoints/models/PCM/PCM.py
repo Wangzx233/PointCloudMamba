@@ -10,7 +10,7 @@ from .PointMLP_layers import ConvBNReLU1D, LocalGrouper, PreExtraction, PreExtra
     PosExtraction, get_activation, PointNetFeaturePropagation
 from typing import List
 from ..layers import furthest_point_sample
-
+from .SpinNet import *
 
 
 @MODELS.register_module()
@@ -30,6 +30,8 @@ class PointMambaEncoder(nn.Module):
                  cls_pooling="max",
                  **kwargs):
         super(PointMambaEncoder, self).__init__()
+
+
 
         assert len(pre_blocks) == len(k_neighbors) == len(reducers) ==\
                len(pos_blocks) == len(dim_expansion) == len(mamba_blocks), \
@@ -188,6 +190,12 @@ class PointMambaEncoder(nn.Module):
         self.grid_size = grid_size
         self.cls_pooling = cls_pooling
 
+        # Spin_net
+        self.spin_net = Descriptor_Net
+        # self.spin_net = self.spin_net.cuda()
+        # self.spin_net = torch.nn.DataParallel(self.spin_net, device_ids=[0])
+
+
     def forward(self, x, f0=None):
         return self.forward_cls_feat(x, f0)
 
@@ -234,6 +242,11 @@ class PointMambaEncoder(nn.Module):
             if not self.block_residual:
                 x_res = None
             x_res = self.residual_proj_blocks_list[i](x_res)
+
+            # Spin
+            # self.spin_net=self.spin_net(p.shape[1])
+            # x = self.spin_net.forward(p)
+            # x_res = x
 
             print("after GAM")
             print("p shape:",p.shape)
