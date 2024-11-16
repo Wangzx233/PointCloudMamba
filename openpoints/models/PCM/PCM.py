@@ -230,39 +230,39 @@ class PointMambaEncoder(nn.Module):
 
         self.spin_net = self.spin_net(32)
         for i in range(self.stages):
-            print("before GAM")
+            print("before GAM",i)
             print("p shape:", p.shape)
             print("x shape:", x.shape)
-            if x_res is None:
-                print("x res: none")
-            else:
-                print("x res:", x_res)
+            # if x_res is None:
+            #     print("x res: none")
+            # else:
+            #     print("x res:", x_res.shape)
             # GAM forward
-            # p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
-            # x = self.pre_blocks_list[i](x)  # [b,d,g]
-            #
-            # x = x.permute(0, 2, 1).contiguous()
-            # if not self.block_residual:
-            #     x_res = None
-            # x_res = self.residual_proj_blocks_list[i](x_res)
+            p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
+            x = self.pre_blocks_list[i](x)  # [b,d,g]
 
-            # Spin
-
-            dim = x.shape[1]
-            x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
-
-            feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
-            x = feature_propagator(p, x)  # (B,N,384)
-
-            # x = x.permute(0, 2, 1)
+            x = x.permute(0, 2, 1).contiguous()
             if not self.block_residual:
                 x_res = None
             x_res = self.residual_proj_blocks_list[i](x_res)
 
-            print("after GAM")
+            # Spin
+
+            dim = x.shape[1]
+            # x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
+            #
+            # feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
+            # x = feature_propagator(p, x)  # (B,N,384)
+            #
+            # # x = x.permute(0, 2, 1)
+            # if not self.block_residual:
+            #     x_res = None
+            # x_res = self.residual_proj_blocks_list[i](x_res)
+
+            print("after GAM",i)
             print("p shape:",p.shape)
             print("x shape:",x.shape)
-            print("x res:",x_res)
+            # print("x res:",x_res)
             # mamba forward
             for layer in self.mamba_blocks_list[i]:
                 p, x, x_res = self.serialization_func(p, x, x_res, self.mamba_layers_orders[mamba_layer_idx])
