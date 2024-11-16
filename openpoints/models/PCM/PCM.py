@@ -231,9 +231,9 @@ class PointMambaEncoder(nn.Module):
         N = p.shape[1]
 
         for i in range(self.stages):
-            print("before GAM",i)
-            print("p shape:", p.shape)
-            print("x shape:", x.shape)
+            # print("before GAM",i)
+            # print("p shape:", p.shape)
+            # print("x shape:", x.shape)
             # if x_res is None:
             #     print("x res: none")
             # else:
@@ -253,8 +253,8 @@ class PointMambaEncoder(nn.Module):
             if i == 2 :
                 dim=dim*2
 
-            if i!=0:
-                N=N//2
+            # if i!=0:
+            #     N=N//2
 
             x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
 
@@ -266,9 +266,9 @@ class PointMambaEncoder(nn.Module):
                 x_res = None
             x_res = self.residual_proj_blocks_list[i](x_res)
 
-            print("after GAM",i)
-            print("p shape:",p.shape)
-            print("x shape:",x.shape)
+            # print("after GAM",i)
+            # print("p shape:",p.shape)
+            # print("x shape:",x.shape)
             # print("x res:",x_res)
             # mamba forward
             for layer in self.mamba_blocks_list[i]:
