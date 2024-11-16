@@ -49,6 +49,7 @@ class PointMambaEncoder(nn.Module):
 
         self.stages = len(pre_blocks)
         self.embedding = ConvBNReLU1D(in_channels, embed_dim, bias=bias, activation=activation)
+        self.embed_dim = embed_dim
 
         # assign serialization order for per mamba layer
         if not isinstance(mamba_layers_orders, list):
@@ -226,6 +227,8 @@ class PointMambaEncoder(nn.Module):
 
         pos_proj_idx = 0
         mamba_layer_idx = 0
+
+        self.spin_net = self.spin_net(32)
         for i in range(self.stages):
             print("before GAM")
             print("p shape:", p.shape)
@@ -235,18 +238,26 @@ class PointMambaEncoder(nn.Module):
             else:
                 print("x res:", x_res)
             # GAM forward
-            p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
-            x = self.pre_blocks_list[i](x)  # [b,d,g]
+            # p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
+            # x = self.pre_blocks_list[i](x)  # [b,d,g]
+            #
+            # x = x.permute(0, 2, 1).contiguous()
+            # if not self.block_residual:
+            #     x_res = None
+            # x_res = self.residual_proj_blocks_list[i](x_res)
 
-            x = x.permute(0, 2, 1).contiguous()
+            # Spin
+
+            dim = x.shape[1]
+            x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
+
+            feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
+            x = feature_propagator(p, x)  # (B,N,384)
+
+            # x = x.permute(0, 2, 1)
             if not self.block_residual:
                 x_res = None
             x_res = self.residual_proj_blocks_list[i](x_res)
-
-            # Spin
-            # self.spin_net=self.spin_net(p.shape[1])
-            # x = self.spin_net.forward(p)
-            # x_res = x
 
             print("after GAM")
             print("p shape:",p.shape)

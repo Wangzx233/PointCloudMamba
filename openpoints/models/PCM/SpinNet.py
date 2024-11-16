@@ -83,3 +83,49 @@ class Descriptor_Net(nn.Module):
 
         x = x.reshape(x.shape[0], x.shape[1], -1)
         return x
+
+
+class EnhancedFeaturePropagation(nn.Module):
+    def __init__(self, k_dim, hidden_dim=384):
+        super(EnhancedFeaturePropagation, self).__init__()
+
+        # 将SpinNet特征从k_dim维转换到hidden_dim
+        self.feature_proj = nn.Linear(k_dim, hidden_dim)
+
+        # 处理点坐标
+        self.coord_proj = nn.Linear(3, hidden_dim // 2)
+
+        # MLP处理合并后的特征
+        self.mlp = nn.Sequential(
+            nn.Conv1d(hidden_dim + hidden_dim // 2, hidden_dim, 1),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Conv1d(hidden_dim, hidden_dim, 1),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, p, patch_feature):
+        """
+        p: (B,N,3) - 原始点云坐标
+        patch_feature: (B,k,1) - SpinNet提取的特征
+        """
+        B, N, _ = p.shape
+
+        # 1. 处理全局特征
+        global_feat = patch_feature.squeeze(-1)  # (B,k)
+        global_feat = self.feature_proj(global_feat)  # (B,hidden_dim)
+        global_feat = global_feat.unsqueeze(1).expand(-1, N, -1)  # (B,N,hidden_dim)
+
+        # 2. 处理局部坐标信息
+        local_feat = self.coord_proj(p)  # (B,N,hidden_dim//2)
+
+        # 3. 合并特征
+        combined_feat = torch.cat([global_feat, local_feat], dim=-1)  # (B,N,hidden_dim+hidden_dim//2)
+
+        # 4. MLP处理 (使用1D卷积)
+        combined_feat = combined_feat.transpose(1, 2)  # (B,hidden_dim+hidden_dim//2,N)
+        point_features = self.mlp(combined_feat)  # (B,hidden_dim,N)
+        point_features = point_features.transpose(1, 2)  # (B,N,hidden_dim)
+
+        return point_features
