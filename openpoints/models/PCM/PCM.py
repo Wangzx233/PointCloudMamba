@@ -253,8 +253,8 @@ class PointMambaEncoder(nn.Module):
             if i == 2 :
                 dim=dim*2
 
-
-            N=N//2
+            if i!=0:
+                N=N//2
 
             x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
 
