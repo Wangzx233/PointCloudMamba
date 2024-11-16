@@ -110,7 +110,7 @@ class EnhancedFeaturePropagation(nn.Module):
         p: (B,N,3) - 原始点云坐标
         patch_feature: (B,k,1) - SpinNet提取的特征
         """
-        B, _, _ = p.shape
+        B, PN, _ = p.shape
 
         # 1. 处理全局特征
         global_feat = patch_feature.squeeze(-1)  # (B,k)
@@ -119,6 +119,10 @@ class EnhancedFeaturePropagation(nn.Module):
 
         # 2. 处理局部坐标信息
         local_feat = self.coord_proj(p)  # (B,N,hidden_dim//2)
+
+
+        if N != PN:
+            local_feat = farthest_point_sample(local_feat,N)
 
         # 3. 合并特征
         combined_feat = torch.cat([global_feat, local_feat], dim=-1)  # (B,N,hidden_dim+hidden_dim//2)
@@ -129,3 +133,43 @@ class EnhancedFeaturePropagation(nn.Module):
         point_features = point_features.transpose(1, 2)  # (B,N,hidden_dim)
 
         return point_features
+
+
+def farthest_point_sample(points, k):
+    """
+    最远点采样(FPS)
+
+    参数:
+        points: (B, N, 3) 形状的张量,表示批次的点云数据
+        k: 需要采样的点数
+
+    返回:
+        采样后的点云: (B, K, 3)
+    """
+    B, N, C = points.shape
+    device = points.device
+
+    # 初始化采样索引和距离
+    sampled_indices = torch.zeros(B, k, dtype=torch.long, device=device)
+    dist = torch.ones(B, N, device=device) * 1e10
+
+    # 随机选择第一个点
+    farthest = torch.randint(0, N, (B,), dtype=torch.long, device=device)
+    batch_indices = torch.arange(B, device=device)
+
+    for i in range(k):
+        # 记录当前最远点的索引
+        sampled_indices[:, i] = farthest
+        # 获取当前选中点的坐标
+        centroid = points[batch_indices, farthest, :].view(B, 1, C)
+        # 计算所有点到当前点的距离
+        dist_to_centroid = torch.sum((points - centroid) ** 2, dim=-1)
+        # 更新最短距离
+        dist = torch.min(dist, dist_to_centroid)
+        # 选择距离最大的点作为下一个采样点
+        farthest = torch.max(dist, dim=-1)[1]
+
+    # 根据采样索引获取采样点
+    sampled_points = torch.gather(points, 1, sampled_indices.unsqueeze(-1).expand(-1, -1, C))
+
+    return sampled_points
