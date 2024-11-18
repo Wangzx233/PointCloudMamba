@@ -239,32 +239,40 @@ class PointMambaEncoder(nn.Module):
             # else:
             #     print("x res:", x_res.shape)
             # GAM forward
-            # p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
-            # x = self.pre_blocks_list[i](x)  # [b,d,g]
-            #
-            # x = x.permute(0, 2, 1).contiguous()
-            # if not self.block_residual:
-            #     x_res = None
-            # x_res = self.residual_proj_blocks_list[i](x_res)
-
+            p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
             # Spin
+            # 将(32, N, K, F)重组为(32*N, K, F)
+            x = x.reshape(-1, x.shape[2], x.shape[3])
+            # 一次性处理所有样本
+            x = self.spin_net.forward(x)  # 输出shape: (32*N, F)
+            # 重组回原始batch维度
+            x = x.reshape(batch_size, x.shape[1], -1)
+            x = self.spin_net.forward(x)
+            # x = self.pre_blocks_list[i](x)  # [b,d,g]
 
-            dim = x.shape[1]
-            if i == 2 :
-                dim=dim*2
-
-            # if i!=0:
-            #     N=N//2
-
-            x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
-
-            feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
-            x = feature_propagator(p,N, x)  # (B,N,384)
-
-            # x = x.permute(0, 2, 1)
+            x = x.permute(0, 2, 1).contiguous()
             if not self.block_residual:
                 x_res = None
             x_res = self.residual_proj_blocks_list[i](x_res)
+
+            # Spin
+
+            # dim = x.shape[1]
+            # if i == 2 :
+            #     dim=dim*2
+            #
+            # if i!=0:
+            #     N=N//2
+            #
+            # x = self.spin_net.forward(x.permute(0,2,1)) #(B,32,1)
+            #
+            # feature_propagator = EnhancedFeaturePropagation(k_dim=32,hidden_dim=dim).cuda()
+            # x = feature_propagator(p,N, x)  # (B,N,384)
+            #
+            # # x = x.permute(0, 2, 1)
+            # if not self.block_residual:
+            #     x_res = None
+            # x_res = self.residual_proj_blocks_list[i](x_res)
 
             # print("after GAM",i)
             # print("p shape:",p.shape)
