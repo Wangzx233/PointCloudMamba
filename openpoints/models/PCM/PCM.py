@@ -241,13 +241,17 @@ class PointMambaEncoder(nn.Module):
             # GAM forward
             p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
             # Spin
-            # 将(32, N, K, F)重组为(32*N, K, F)
-            x = x.reshape(-1, x.shape[2], x.shape[3])
-            # 一次性处理所有样本
-            x = self.spin_net.forward(x)  # 输出shape: (32*N, F)
-            # 重组回原始batch维度
-            x = x.reshape(batch_size, x.shape[1], -1)
-            x = self.spin_net.forward(x)
+            # batch_size, num_samples, N, K = x.shape
+            b, n, k, f = x.shape
+            bz = 32
+            outputs = []
+            x = x.reshape(-1, k, f)
+            for i in range(0, len(x), bz):
+                batch = x[i:i + bz]
+                output = self.spin_net.forward(batch)
+                outputs.append(output)
+            x = torch.cat(outputs, 0).reshape(b, n, -1)
+            print(x)
             # x = self.pre_blocks_list[i](x)  # [b,d,g]
 
             x = x.permute(0, 2, 1).contiguous()
