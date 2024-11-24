@@ -11,7 +11,7 @@ from .PointMLP_layers import ConvBNReLU1D, LocalGrouper, PreExtraction, PreExtra
 from typing import List
 from ..layers import furthest_point_sample
 from .SpinNet import *
-
+from .SlimUNETR_v2 import *
 
 @MODELS.register_module()
 class PointMambaEncoder(nn.Module):
@@ -159,11 +159,32 @@ class PointMambaEncoder(nn.Module):
             if use_order_prompt:
                 self.order_prompt_proj.append(nn.Linear(384, out_channel, bias=False))
             for n_mamba in range(mamba_block_num):
-                mamba_block_module = MambaBlock(dim=out_channel, layer_idx=mamba_layer_idx,
-                                                bimamba_type=bimamba_type,
-                                                norm_cls=norm_cls, fused_add_norm=fused_add_norm,
-                                                residual_in_fp32=residual_in_fp32,
-                                                drop_path=inter_dpr[mamba_layer_idx])
+
+                # mamba_block_module = MambaBlock(dim=out_channel, layer_idx=mamba_layer_idx,
+                #                                 bimamba_type=bimamba_type,
+                #                                 norm_cls=norm_cls, fused_add_norm=fused_add_norm,
+                #                                 residual_in_fp32=residual_in_fp32,
+                #                                 drop_path=inter_dpr[mamba_layer_idx])
+
+                #new mamba
+
+                match mamba_layer_idx:
+                    case 0:
+                        d = 1
+                    case 1:
+                        d=2
+                    case 2:
+                        d=2
+                    case 3:
+                        d=4
+                    case 4:
+                        d=4
+                    case 5:
+                        d=8
+
+
+                mamba_block_module = SlimUNETRBlock_v2(dim=12+1024//d, d_state = 16, d_conv = 4, expand = 2, head=4, num_slices=4, step = mamba_layer_idx)
+
                 mamba_block.append(mamba_block_module)
                 if self.mamba_pos and self.pos_type != "share":
                     self.pos_proj.append(self.pos_proj_type(3, out_channel, bias=False))
@@ -239,20 +260,9 @@ class PointMambaEncoder(nn.Module):
             # else:
             #     print("x res:", x_res.shape)
             # GAM forward
+
             p, x, x_res = self.local_grouper_list[i](p, x.permute(0, 2, 1), x_res)  # [b,g,3]  [b,g,k,d]
-            # Spin
-            # batch_size, num_samples, N, K = x.shape
-            b, n, k, f = x.shape
-            bz = 32
-            outputs = []
-            x = x.reshape(-1, k, f)
-            for i in range(0, len(x), bz):
-                batch = x[i:i + bz]
-                output = self.spin_net.forward(batch)
-                outputs.append(output)
-            x = torch.cat(outputs, 0).reshape(b, n, -1)
-            print(x)
-            # x = self.pre_blocks_list[i](x)  # [b,d,g]
+            x = self.pre_blocks_list[i](x)  # [b,d,g]
 
             x = x.permute(0, 2, 1).contiguous()
             if not self.block_residual:

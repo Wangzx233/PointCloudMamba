@@ -3,7 +3,7 @@ model:
   encoder_args:
     NAME: PointMambaEncoder
     in_channels: 3
-    embed_dim: 24
+    embed_dim: 16
     groups: 1
     res_expansion: 1.0
     activation: "relu"
