@@ -203,6 +203,8 @@ class SlimUNETRBlock_v2(nn.Module):
            """
         # 1. 保存残差连接
         x_skip = x  # 用于后续的残差连接
+        if x_res is not None:
+            x+=x_res
 
         # 2. 特征压缩
         # 除了最后一步(step=3)外，对特征图进行下采样压缩
