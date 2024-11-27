@@ -185,8 +185,8 @@ class SlimUNETRBlock_v2(nn.Module):
         )
         # qkv
         self.qkv = nn.Conv1d(dim, dim * 3, kernel_size=1, bias=False)
-        
-        
+
+        self.dropout = nn.Dropout(p=0.1)  # 添加dropout层
     def forward(self, x,x_res):
         """
            SlimUNETRBlock_v2的前向传播函数
@@ -248,6 +248,7 @@ class SlimUNETRBlock_v2(nn.Module):
         # (v @ attn.transpose(-2, -1)) 计算加权值
         # .view(B, -1, H, W, Z) 重塑回3D形状
         out = (v @ attn.transpose(-2, -1)).view(B, -1, H)
+        out = self.dropout(out)  # 添加dropout
 
         # 8. 特征上采样
         # 如果不是最后一步，进行上采样恢复空间维度
