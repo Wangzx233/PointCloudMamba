@@ -1,1 +1,1 @@
-CUDA_VISIBLE_DEVICES=5 python examples/classification/main.py --cfg cfgs/modelnet40ply2048/PCM.yaml
+CUDA_VISIBLE_DEVICES=1 python examples/classification/main.py --cfg cfgs/modelnet40ply2048/PCM.yaml
