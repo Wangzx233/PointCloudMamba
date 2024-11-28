@@ -4,7 +4,7 @@ model:
   encoder_args:
     NAME: PointMambaEncoder
     in_channels: 7
-    embed_dim: 64
+    embed_dim: 96
     groups: 1
     res_expansion: 1.0
     activation: "relu"
@@ -14,7 +14,7 @@ model:
     dim_expansion: [ 1, 2, 2, 2 ]
     pre_blocks: [ 1, 1, 1, 1 ]
 #    mamba_blocks: [ 1, 2, 2, 4 ]
-    mamba_blocks: [ 1, 1, 1, 4 ]
+    mamba_blocks: [ 1, 1, 2, 2 ]
     pos_blocks: [ 0, 0, 0, 0 ]
     k_neighbors: [ 12, 12, 12, 12 ]
     reducers: [ 4, 4, 2, 2 ]
@@ -25,7 +25,7 @@ model:
     drop_path_rate: 0.1
     mamba_pos: True
 #    mamba_layers_orders: [ "xyz", "xzy", "yxz", "yzx", "zxy", "zyx", "hilbert", "z", "z-trans" ]
-    mamba_layers_orders: [ "xyz", "xzy", "yxz", "zyx", "hilbert", "z", "z-trans" ]
+    mamba_layers_orders: ["xyz", "xzy", "yxz", "yzx", "zxy", "zyx"]
     use_order_prompt: True
     prompt_num_per_order: 6
     use_windows: True
@@ -35,10 +35,10 @@ model:
 
   decoder_args:
     NAME: PointMambaDecoder
-#    encoder_channel_list: [ 96, 96, 192, 384, 768 ]
-    encoder_channel_list: [ 80, 80, 128, 192, 384 ]
-#    decoder_channel_list: [ 384, 192, 96, 96 ]
-    decoder_channel_list: [ 192, 96, 48, 48 ]
+    encoder_channel_list: [ 96, 96, 192, 384, 768 ]
+#    encoder_channel_list: [ 96, 96, 128, 192, 384 ]
+    decoder_channel_list: [ 384, 192, 96, 96 ]
+#    decoder_channel_list: [ 192, 96, 48, 48 ]
     decoder_blocks: [ 1, 1, 1, 1 ]
     mamba_blocks: [ 0, 0, 0, 0 ]
     mamba_layers_orders: [ ]
