@@ -148,7 +148,7 @@ class SlimUNETRBlock_v2(nn.Module):
         self.num_heads = head
         self.head_dim = dim // head
         self.norm = nn.LayerNorm(dim)
-        if self.step != 6 and self.step != 5:
+        if self.step != 4 and self.step != 3:
             self.compression = nn.Conv1d(in_channels=dim,
                     out_channels=dim, 
                     kernel_size=3, 
@@ -160,7 +160,7 @@ class SlimUNETRBlock_v2(nn.Module):
                                         stride=4, 
                                         padding=0, 
                                         output_padding=1)
-        elif self.step == 5:
+        elif self.step == 3:
             self.compression = nn.Conv1d(in_channels=dim,
                  out_channels=dim, 
                  kernel_size=1, 
@@ -256,7 +256,7 @@ class SlimUNETRBlock_v2(nn.Module):
         # 8. 特征上采样
         # 如果不是最后一步，进行上采样恢复空间维度
         # print(self.step)
-        if self.step != 6:
+        if self.step != 4:
             out = self.upsample(out)
 
         # 9. 残差连接
