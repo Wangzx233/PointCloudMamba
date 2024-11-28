@@ -148,7 +148,7 @@ class SlimUNETRBlock_v2(nn.Module):
         self.num_heads = head
         self.head_dim = dim // head
         self.norm = nn.LayerNorm(dim)
-        if self.step != 8 and self.step != 7:
+        if self.step != 6 and self.step != 5:
             self.compression = nn.Conv1d(in_channels=dim,
                     out_channels=dim, 
                     kernel_size=3, 
@@ -160,7 +160,7 @@ class SlimUNETRBlock_v2(nn.Module):
                                         stride=4, 
                                         padding=0, 
                                         output_padding=1)
-        elif self.step == 7:
+        elif self.step == 5:
             self.compression = nn.Conv1d(in_channels=dim,
                  out_channels=dim, 
                  kernel_size=1, 
@@ -208,7 +208,7 @@ class SlimUNETRBlock_v2(nn.Module):
 
         # 2. 特征压缩
         # 除了最后一步(step=3)外，对特征图进行下采样压缩
-        if self.step != 8:
+        if self.step != 6:
             x = self.compression(x)  # 使用3D卷积进行下采样
 
         # 3. 获取张量基本信息
