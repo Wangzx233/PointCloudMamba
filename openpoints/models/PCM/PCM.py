@@ -172,9 +172,9 @@ class PointMambaEncoder(nn.Module):
                     case 0:
                         d = 1
                     case 1:
-                        d=1
+                        d=2
                     case 2:
-                        d=1
+                        d=2
                     case 3:
                         d=4
                     case 4:
