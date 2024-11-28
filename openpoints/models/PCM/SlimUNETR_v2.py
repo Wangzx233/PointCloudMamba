@@ -256,7 +256,7 @@ class SlimUNETRBlock_v2(nn.Module):
         # 8. 特征上采样
         # 如果不是最后一步，进行上采样恢复空间维度
         # print(self.step)
-        if self.step != 8:
+        if self.step != 6:
             out = self.upsample(out)
 
         # 9. 残差连接
