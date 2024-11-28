@@ -14,7 +14,7 @@ model:
     dim_expansion: [ 1, 2, 2, 2 ]
     pre_blocks: [ 1, 1, 1, 1 ]
 #    mamba_blocks: [ 1, 2, 2, 4 ]
-    mamba_blocks: [ 1, 1, 1, 4 ]
+    mamba_blocks: [ 1, 1, 1, 2 ]
     pos_blocks: [ 0, 0, 0, 0 ]
     k_neighbors: [ 12, 12, 12, 12 ]
     reducers: [ 4, 4, 2, 2 ]
