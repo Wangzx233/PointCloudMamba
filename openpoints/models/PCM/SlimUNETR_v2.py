@@ -231,6 +231,7 @@ class SlimUNETRBlock_v2(nn.Module):
         # 5. Mamba序列处理
         # 使用Mamba模块处理归一化后的序列
         x_mamba = self.mamba(x_norm)
+        x_mamba = self.dropout(x_mamba)  # 添加dropout
 
         # 6. 重塑回3D形状
         # [B, H*W*Z, C] -> [B, C, H, W, Z]
