@@ -149,19 +149,13 @@ class SlimUNETRBlock_v2(nn.Module):
         self.head_dim = dim // head
         self.norm = nn.LayerNorm(dim)
         if self.step != 8 and self.step != 7:
-            # self.compression = nn.Conv1d(in_channels=dim,
-            #         out_channels=dim,
-            #         kernel_size=3,
-            #         stride=4,
-            #         padding=0)
-            # 修改卷积层的维度，使用输入维度
-            self.compression = nn.Conv1d(
-                in_channels=dim,  # 使用输入维度
-                out_channels=dim,  # 保持输出维度相同
-                kernel_size=3,
-                stride=4,
-                padding=1  # 添加padding以保持维度
-            )
+            self.compression = nn.Conv1d(in_channels=dim,
+                    out_channels=dim,
+                    kernel_size=3,
+                    stride=4,
+                    padding=0)
+
+
             self.upsample = nn.ConvTranspose1d(in_channels=dim,
                                         out_channels=dim, 
                                         kernel_size=3, 

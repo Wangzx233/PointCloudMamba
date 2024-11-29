@@ -36,9 +36,9 @@ model:
   decoder_args:
     NAME: PointMambaDecoder
 #    encoder_channel_list: [ 96, 96, 192, 384, 768 ]
-    encoder_channel_list: [384, 384, 768, 768, 768]
+    encoder_channel_list: [384, 384, 768, 1536, 1536]  # 匹配 encoder 的实际输出通道
 #    decoder_channel_list: [ 384, 192, 96, 96 ]
-    decoder_channel_list: [ 768, 384, 192, 192 ]
+    decoder_channel_list: [1536, 768, 384, 384]  # 逐步降维回到原始维度
     decoder_blocks: [ 1, 1, 1, 1 ]
     mamba_blocks: [ 0, 0, 0, 0 ]
     mamba_layers_orders: [ ]
