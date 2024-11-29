@@ -149,11 +149,16 @@ class SlimUNETRBlock_v2(nn.Module):
         self.head_dim = dim // head
         self.norm = nn.LayerNorm(dim)
         if self.step != 8 and self.step != 7:
-            self.compression = nn.Conv1d(in_channels=dim,
-                    out_channels=dim, 
-                    kernel_size=3, 
-                    stride=4, 
-                    padding=0)
+            # self.compression = nn.Conv1d(in_channels=dim,
+            #         out_channels=dim,
+            #         kernel_size=3,
+            #         stride=4,
+            #         padding=0)
+            self.compression = nn.Conv1d(in_channels=4608,  # match input channels
+                                         out_channels=1536,  # match expected channels
+                                         kernel_size=3,
+                                         stride=4,
+                                         padding=0)
             self.upsample = nn.ConvTranspose1d(in_channels=dim,
                                         out_channels=dim, 
                                         kernel_size=3, 
