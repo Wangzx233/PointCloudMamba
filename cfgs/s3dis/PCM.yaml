@@ -35,8 +35,8 @@ model:
 
   decoder_args:
     NAME: PointMambaDecoder
-    encoder_channel_list: [ 96, 96, 192, 384, 768 ]
-#    encoder_channel_list: [ 96, 96, 128, 192, 384 ]
+#    encoder_channel_list: [ 96, 96, 192, 384, 768 ]
+    encoder_channel_list: [ 192, 192, 385, 384, 768 ]
     decoder_channel_list: [ 384, 192, 96, 96 ]
 #    decoder_channel_list: [ 192, 96, 48, 48 ]
     decoder_blocks: [ 1, 1, 1, 1 ]
