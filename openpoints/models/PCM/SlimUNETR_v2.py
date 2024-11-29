@@ -179,9 +179,9 @@ class SlimUNETRBlock_v2(nn.Module):
                 d_state=d_state,  # SSM state expansion factor
                 d_conv=d_conv,    # Local convolution width
                 expand=expand,    # Block expansion factor
-                bimamba_type="v2",
-                #nslices = 4
-                # nslices=num_slices,
+                bimamba_type="v3",
+                # nslices = 4
+                nslices=num_slices,
         )
         # qkv
         self.qkv = nn.Conv1d(dim, dim * 3, kernel_size=1, bias=False)
