@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=1 python examples/segmentation/main.py --cfg cfgs/s3dis/PCM.yaml

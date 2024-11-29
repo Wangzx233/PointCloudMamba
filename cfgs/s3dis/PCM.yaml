@@ -21,7 +21,7 @@ model:
     rms_norm: True
     residual_in_fp32: True
     fused_add_norm: True
-    bimamba_type: "v2"
+    bimamba_type: "v3"
     drop_path_rate: 0.1
     mamba_pos: True
     mamba_layers_orders: [ "xyz", "xzy", "yxz", "yzx", "zxy", "zyx", "hilbert", "z", "z-trans" ]
